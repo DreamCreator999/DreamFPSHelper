@@ -6,7 +6,7 @@ local Workspace = game:GetService("Workspace")
 local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
 
--- Assets & Configuration
+-- Assets & Config
 local ICON_ID = "rbxassetid://114662130912025"
 local SETTINGS_ICON = "rbxassetid://78494414238159"
 local FLY_SPEED = 60
@@ -18,16 +18,21 @@ local isFlying, isNoclipping = false, false
 local fovRadius, espRange = 150, 1000
 local targetPlayer = nil
 
-local ESP_DATA = {}
 local connections = {}
 
 -- ==========================================
--- 1. UTILITIES & DRAG SYSTEM
+-- 1. UTILITIES
 -- ==========================================
 local function isEnemy(p)
     if not p or p == LocalPlayer then return false end
+    local hum = p.Character and p.Character:FindFirstChild("Humanoid")
+    if not hum or hum.Health <= 0 then return false end
     if LocalPlayer.Team and p.Team then return LocalPlayer.Team ~= p.Team end
     return true
+end
+
+local function getHealthColor(hpPercent)
+    return hpPercent > 0.7 and Color3.new(0, 1, 0) or hpPercent > 0.3 and Color3.new(1, 0.8, 0) or Color3.new(1, 0, 0)
 end
 
 local function makeDraggable(frame, callback)
@@ -58,9 +63,8 @@ end
 -- 2. GUI CONSTRUCTION
 -- ==========================================
 local screenGui = Instance.new("ScreenGui", LocalPlayer:WaitForChild("PlayerGui"))
-screenGui.Name = "DreamMaster_V27"
-screenGui.ResetOnSpawn = false
-screenGui.DisplayOrder = 999999
+screenGui.Name = "DreamMaster_V29"
+screenGui.ResetOnSpawn, screenGui.DisplayOrder = false, 999999
 
 local minBtn = Instance.new("ImageButton", screenGui)
 minBtn.Size, minBtn.Image, minBtn.Visible = UDim2.new(0, 80, 0, 80), ICON_ID, false
@@ -96,7 +100,7 @@ setCon.CanvasSize = UDim2.new(0,0,2.2,0)
 local hideBtn = Instance.new("TextButton", mainFrame)
 hideBtn.Size, hideBtn.Position, hideBtn.Text = UDim2.new(0,30,0,30), UDim2.new(1,-35,0,5), "_"
 hideBtn.BackgroundColor3, hideBtn.TextColor3 = Color3.fromRGB(25,25,25), Color3.new(1,1,1)
-Instance.new("UICorner", hideBtn).CornerRadius = UDim.new(0, 8)
+Instance.new("UICorner", hideBtn)
 hideBtn.MouseButton1Click:Connect(toggleUI)
 
 local setToggle = Instance.new("ImageButton", mainFrame)
@@ -112,7 +116,7 @@ local function createBtn(text, pos, color, parent)
     return btn
 end
 
--- Main Buttons
+-- Main Tab
 local status = createBtn("Target: Scanning...", UDim2.new(0.05,0,0,5), Color3.fromRGB(20,20,20), menuCon)
 local headBtn = createBtn("Aim Part: HEAD", UDim2.new(0.05,0,0,45), Color3.fromRGB(80,30,120), menuCon)
 local followBtn = createBtn("Follow: OFF [K]", UDim2.new(0.05,0,0,90), Color3.fromRGB(40,40,40), menuCon)
@@ -120,35 +124,27 @@ local lockBtn = createBtn("Cam Lock: OFF [L]", UDim2.new(0.05,0,0,135), Color3.f
 local flyBtn = createBtn("Fly Mode: OFF [X]", UDim2.new(0.05,0,0,180), Color3.fromRGB(40,40,40), menuCon)
 local killBtn = createBtn("KILL ALL [DEL]", UDim2.new(0.05,0,0,280), Color3.fromRGB(80,20,20), menuCon)
 
--- Settings Labels & Buttons
+-- Settings Tab Labels
 local fovLbl = Instance.new("TextLabel", setCon) fovLbl.Size, fovLbl.Position, fovLbl.TextColor3, fovLbl.BackgroundTransparency = UDim2.new(1,0,0,25), UDim2.new(0,0,0,10), Color3.new(1,1,1), 1
-local fovPlus = createBtn("FOV Radius +", UDim2.new(0.05,0,0,40), Color3.fromRGB(45,45,45), setCon)
-local fovMinus = createBtn("FOV Radius -", UDim2.new(0.05,0,0,80), Color3.fromRGB(45,45,45), setCon)
-
+local fovPlus = createBtn("FOV +", UDim2.new(0.05,0,0,40), Color3.fromRGB(45,45,45), setCon)
+local fovMinus = createBtn("FOV -", UDim2.new(0.05,0,0,80), Color3.fromRGB(45,45,45), setCon)
 local rangeLbl = Instance.new("TextLabel", setCon) rangeLbl.Size, rangeLbl.Position, rangeLbl.TextColor3, rangeLbl.BackgroundTransparency = UDim2.new(1,0,0,25), UDim2.new(0,0,0,130), Color3.new(1,1,1), 1
-local rangePlus = createBtn("ESP Range +", UDim2.new(0.05,0,0,160), Color3.fromRGB(45,45,45), setCon)
-local rangeMinus = createBtn("ESP Range -", UDim2.new(0.05,0,0,200), Color3.fromRGB(45,45,45), setCon)
-
-local ghostLbl = Instance.new("TextLabel", setCon) ghostLbl.Size, ghostLbl.Position, ghostLbl.Text, ghostLbl.TextColor3, ghostLbl.BackgroundTransparency = UDim2.new(1,0,0,25), UDim2.new(0,0,0,250), "GHOST OPTIONS", Color3.new(1,1,1), 1
-local noclipBtn = createBtn("Noclip: OFF [N]", UDim2.new(0.05,0,0,280), Color3.fromRGB(45,45,45), setCon)
-local backBtn = createBtn("BACK TO MENU", UDim2.new(0.05,0,0,330), Color3.fromRGB(30,30,30), setCon)
-backBtn.MouseButton1Click:Connect(function() menuCon.Visible = true setCon.Visible = false end)
+local rangePlus = createBtn("Range +", UDim2.new(0.05,0,0,160), Color3.fromRGB(45,45,45), setCon)
+local rangeMinus = createBtn("Range -", UDim2.new(0.05,0,0,200), Color3.fromRGB(45,45,45), setCon)
 
 -- ==========================================
--- 3. CORE ENGINES (FLY, LOCK, TARGET)
+-- 3. CORE ENGINES
 -- ==========================================
 local fovCircle = Drawing.new("Circle")
 fovCircle.Visible, fovCircle.Thickness, fovCircle.Color = true, 2, Color3.fromRGB(0,255,200)
 
-connections.Loops = RunService.Heartbeat:Connect(function(dt)
+connections.Main = RunService.Heartbeat:Connect(function()
     fovCircle.Position = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
     fovCircle.Radius = fovRadius
-
     local char = LocalPlayer.Character
     if not char or not char:FindFirstChild("HumanoidRootPart") then return end
     local hrp = char.HumanoidRootPart
 
-    -- Targeting Logic
     local closest, dist = nil, math.huge
     for _, p in pairs(Players:GetPlayers()) do
         if isEnemy(p) and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
@@ -162,10 +158,7 @@ connections.Loops = RunService.Heartbeat:Connect(function(dt)
     end
     targetPlayer = closest
 
-    -- Fly & Noclip
-    if isNoclipping then
-        for _, v in pairs(char:GetDescendants()) do if v:IsA("BasePart") then v.CanCollide = false end end
-    end
+    if isNoclipping then for _, v in pairs(char:GetDescendants()) do if v:IsA("BasePart") then v.CanCollide = false end end end
     if isFlying then
         local move = Vector3.new(0,0,0)
         if UserInputService:IsKeyDown(Enum.KeyCode.W) then move += Camera.CFrame.LookVector end
@@ -178,9 +171,8 @@ connections.Loops = RunService.Heartbeat:Connect(function(dt)
         hrp.Anchored = (move == Vector3.new(0,0,0))
     else hrp.Anchored = false end
 
-    -- Follow
     if isFollowing and targetPlayer and targetPlayer.Character then
-        char:PivotTo(targetPlayer.Character.HumanoidRootPart.CFrame * CFrame.new(0, HEIGHT_ABOVE, 0))
+        char:PivotTo(targetPlayer.Character.HumanoidRootPart.CFrame * CFrame.new(0, 8, 0))
     end
 end)
 
@@ -189,19 +181,62 @@ connections.Render = RunService.RenderStepped:Connect(function()
         local aim = isHeadshotOnly and targetPlayer.Character:FindFirstChild("Head") or targetPlayer.Character:FindFirstChild("HumanoidRootPart")
         if aim then Camera.CFrame = CFrame.lookAt(Camera.CFrame.Position, aim.Position) end
     end
-    -- UI Refresh
-    status.Text = "TARGET: " .. (targetPlayer and targetPlayer.Name:upper() or "SEARCHING...")
+    status.Text = "TARGET: " .. (targetPlayer and targetPlayer.Name:upper() or "SCANNING...")
     fovLbl.Text = "FOV RADIUS: " .. fovRadius
     rangeLbl.Text = "ESP RANGE: " .. espRange
     followBtn.BackgroundColor3 = isFollowing and Color3.fromRGB(50,150,50) or Color3.fromRGB(150,40,40)
     lockBtn.BackgroundColor3 = isCamLocked and Color3.fromRGB(50,200,200) or Color3.fromRGB(40,80,150)
     flyBtn.BackgroundColor3 = isFlying and Color3.fromRGB(50,150,50) or Color3.fromRGB(150,40,40)
-    noclipBtn.BackgroundColor3 = isNoclipping and Color3.fromRGB(50,150,50) or Color3.fromRGB(150,40,40)
 end)
 
 -- ==========================================
--- 4. INPUTS & ESP
+-- 4. ESP SYSTEM (WITH HEALTH BAR)
 -- ==========================================
+local function setupESP(p)
+    p.CharacterAdded:Connect(function(char)
+        if p == LocalPlayer then return end
+        local head = char:WaitForChild("Head", 5)
+        local hum = char:WaitForChild("Humanoid", 5)
+        
+        local hl = Instance.new("Highlight", char)
+        local bill = Instance.new("BillboardGui", head)
+        bill.AlwaysOnTop, bill.Size, bill.ExtentsOffset = true, UDim2.new(0,120,0,50), Vector3.new(0, 2, 0)
+        
+        local lbl = Instance.new("TextLabel", bill)
+        lbl.Size, lbl.BackgroundTransparency, lbl.Font, lbl.TextColor3, lbl.TextSize = UDim2.new(1,0,0,30), 1, "GothamBold", Color3.new(1,1,1), 12
+        
+        -- Health Bar BG
+        local barBG = Instance.new("Frame", bill)
+        barBG.Size, barBG.Position = UDim2.new(0.8, 0, 0, 5), UDim2.new(0.1, 0, 0, 32)
+        barBG.BackgroundColor3, barBG.BorderSizePixel = Color3.new(0,0,0), 0
+        
+        -- Health Bar Fill
+        local barFill = Instance.new("Frame", barBG)
+        barFill.Size, barFill.BorderSizePixel = UDim2.new(1, 0, 1, 0), 0
+        
+        connections["ESP"..p.UserId] = RunService.RenderStepped:Connect(function()
+            if not char or not char.Parent or not isEnemy(p) then 
+                hl.Enabled, bill.Enabled = false, false return 
+            end
+            local d = (LocalPlayer.Character.HumanoidRootPart.Position - char.HumanoidRootPart.Position).Magnitude
+            if isEspEnabled and d <= espRange then
+                hl.Enabled, bill.Enabled = true, true
+                local hpPercent = hum.Health / hum.MaxHealth
+                local col = getHealthColor(hpPercent)
+                
+                lbl.Text = p.Name .. " [" .. math.floor(d) .. "m]"
+                lbl.TextColor3 = col
+                barFill.Size = UDim2.new(hpPercent, 0, 1, 0)
+                barFill.BackgroundColor3 = col
+                hl.FillColor = col
+            else
+                hl.Enabled, bill.Enabled = false, false
+            end
+        end)
+    end)
+end
+
+-- Controls
 local function kill() for _,c in pairs(connections) do c:Disconnect() end screenGui:Destroy() fovCircle:Remove() end
 killBtn.MouseButton1Click:Connect(kill)
 headBtn.MouseButton1Click:Connect(function() isHeadshotOnly = not isHeadshotOnly headBtn.Text = "Aim Part: "..(isHeadshotOnly and "HEAD" or "BODY") end)
@@ -221,21 +256,5 @@ UserInputService.InputBegan:Connect(function(i, g)
     end
 end)
 
-local function setupESP(p)
-    p.CharacterAdded:Connect(function(char)
-        if not isEnemy(p) then return end
-        local hl, bill = Instance.new("Highlight", char), Instance.new("BillboardGui", char:WaitForChild("Head", 5))
-        bill.AlwaysOnTop, bill.Size = true, UDim2.new(0,120,0,45)
-        local lbl = Instance.new("TextLabel", bill)
-        lbl.Size, lbl.BackgroundTransparency, lbl.TextColor3, lbl.Font = UDim2.new(1,0,1,0), 1, Color3.new(1,1,1), "GothamBold"
-        connections["ESP"..p.UserId] = RunService.RenderStepped:Connect(function()
-            if not char or not char.Parent then connections["ESP"..p.UserId]:Disconnect() return end
-            local d = (LocalPlayer.Character.HumanoidRootPart.Position - char.HumanoidRootPart.Position).Magnitude
-            hl.Enabled = isEspEnabled and d <= espRange
-            bill.Enabled = isEspEnabled and d <= espRange
-            lbl.Text = p.Name .. "\n" .. math.floor(d) .. "m"
-        end)
-    end)
-end
 for _, p in pairs(Players:GetPlayers()) do setupESP(p) end
 Players.PlayerAdded:Connect(setupESP)
