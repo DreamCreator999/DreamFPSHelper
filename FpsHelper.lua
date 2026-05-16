@@ -1,165 +1,288 @@
+--[[
+    DREAM TACTICAL: RAW AIM EDITION
+    Focus: Absolute Raw Camera Snapping, No Interpolation, Zero Delay.
+]]
+
 local Players = game:GetService("Players")
 local UserInputService = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
+local TweenService = game:GetService("TweenService")
+local CoreGui = game:GetService("CoreGui")
 
 local LocalPlayer = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
+local Mouse = LocalPlayer:GetMouse()
 
--- Assets & Config
-local ICON_ID = "rbxassetid://114662130912025"
-local SETTINGS_ICON = "rbxassetid://78494414238159"
-local FLY_SPEED = 60
+-- ==========================================
+-- 1. CONFIGURATION & STATE MANAGEMENT
+-- ==========================================
+local Config = {
+    Icon = "rbxassetid://114662130912025",
+    SettingsIcon = "rbxassetid://78494414238159",
+    Theme = {
+        Main = Color3.fromRGB(12, 12, 14),
+        Accent = Color3.fromRGB(0, 255, 200),
+        Button = Color3.fromRGB(25, 25, 28),
+        ButtonHover = Color3.fromRGB(45, 45, 50),
+        Active = Color3.fromRGB(50, 150, 100),
+        Danger = Color3.fromRGB(150, 40, 40)
+    }
+}
 
--- Global States
-local isFollowing, isCamLocked, isHeadshotOnly = false, false, true
-local isEspEnabled, isSkeletonEnabled = true, true
-local isFlying, isNoclipping = false, false
-local fovRadius, espRange = 150, 1000
+local States = {
+    isFollowing = false,
+    isCamLocked = false,
+    isHeadshotOnly = true,
+    isEspEnabled = true,
+    isFlying = false,
+    isNoclipping = false,
+    isSpeedHack = false,
+    
+    fovRadius = 150,
+    espRange = 1000,
+    flySpeed = 65,
+    walkSpeedMod = 100
+}
+
 local targetPlayer = nil
-
 local connections = {}
 
 -- ==========================================
--- 1. UTILITIES
+-- 2. ENGINE UTILITIES
 -- ==========================================
-local function isEnemy(p)
-    if not p or p == LocalPlayer then return false end
-    local hum = p.Character and p.Character:FindFirstChild("Humanoid")
-    if not hum or hum.Health <= 0 then return false end
-    if LocalPlayer.Team and p.Team then return LocalPlayer.Team ~= p.Team end
+local function getRoot(char)
+    if not char then return nil end
+    return char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso") or char:FindFirstChild("UpperTorso")
+end
+
+local function isEnemy(plr)
+    if not plr or plr == LocalPlayer then return false end
+    local char = plr.Character
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    if not hum or hum.Health <= 0 or not getRoot(char) then return false end
+    
+    if LocalPlayer.Team and plr.Team then
+        if LocalPlayer.Team == plr.Team or LocalPlayer.TeamColor == plr.TeamColor then
+            return false 
+        end
+    end
     return true
 end
 
 local function getHealthColor(hpPercent)
-    return hpPercent > 0.7 and Color3.new(0, 1, 0) or hpPercent > 0.3 and Color3.new(1, 0.8, 0) or Color3.new(1, 0, 0)
+    return Color3.new(1 - hpPercent, hpPercent, 0)
 end
 
-local function makeDraggable(frame, callback)
-    local dragging, dragStart, startPos, hasMoved
+-- ==========================================
+-- 3. INTERFACE FRAMEWORK
+-- ==========================================
+local screenGui = Instance.new("ScreenGui")
+screenGui.Name = "DreamRawAim"
+screenGui.ResetOnSpawn = false
+screenGui.DisplayOrder = 999999999
+pcall(function() screenGui.Parent = CoreGui end)
+if not screenGui.Parent then screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui") end
+
+local minBtn = Instance.new("ImageButton", screenGui)
+minBtn.Size, minBtn.Visible = UDim2.new(0, 80, 0, 80), false
+minBtn.Position = UDim2.new(0.5, -40, 0.4, 0)
+minBtn.BackgroundColor3, minBtn.Image = Config.Theme.Main, Config.Icon
+Instance.new("UICorner", minBtn).CornerRadius = UDim.new(0.5, 0)
+local pulse = TweenService:Create(minBtn, TweenInfo.new(1.5, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true), {Size = UDim2.new(0, 85, 0, 85), ImageTransparency = 0.4})
+pulse:Play()
+
+local mainFrame = Instance.new("Frame", screenGui)
+mainFrame.Size, mainFrame.Position = UDim2.new(0, 260, 0, 440), UDim2.new(0.5, -130, 0.3, 0)
+mainFrame.BackgroundColor3 = Config.Theme.Main
+Instance.new("UICorner", mainFrame).CornerRadius = UDim.new(0, 8)
+local mainStroke = Instance.new("UIStroke", mainFrame)
+mainStroke.Color, mainStroke.Thickness = Config.Theme.ButtonHover, 2
+
+local function makeDraggable(frame)
+    local dragging, dragInput, dragStart, startPos
     frame.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging, hasMoved, dragStart, startPos = true, false, input.Position, frame.Position
-            local moveConn
-            moveConn = input.Changed:Connect(function()
-                if input.UserInputState == Enum.UserInputState.End then
-                    dragging = false
-                    moveConn:Disconnect()
-                    if not hasMoved and callback then callback() end
-                end
-            end)
+            dragging = true
+            dragStart = input.Position
+            startPos = frame.Position
+        end
+    end)
+    frame.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement then
+            dragInput = input
         end
     end)
     UserInputService.InputChanged:Connect(function(input)
-        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
+        if input == dragInput and dragging then
             local delta = input.Position - dragStart
-            if delta.Magnitude > 5 then hasMoved = true end
             frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
         end
     end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end)
 end
-
--- ==========================================
--- 2. GUI CONSTRUCTION
--- ==========================================
-local screenGui = Instance.new("ScreenGui", LocalPlayer:WaitForChild("PlayerGui"))
-screenGui.Name = "DreamMaster_V29"
-screenGui.ResetOnSpawn, screenGui.DisplayOrder = false, 999999
-
-local minBtn = Instance.new("ImageButton", screenGui)
-minBtn.Size, minBtn.Image, minBtn.Visible = UDim2.new(0, 80, 0, 80), ICON_ID, false
-minBtn.BackgroundColor3 = Color3.fromRGB(15,15,15)
-Instance.new("UICorner", minBtn)
-
-local mainFrame = Instance.new("Frame", screenGui)
-mainFrame.Size, mainFrame.Position = UDim2.new(0, 260, 0, 400), UDim2.new(0.5, -130, 0.4, 0)
-mainFrame.BackgroundColor3 = Color3.fromRGB(10, 10, 10)
-Instance.new("UICorner", mainFrame)
+makeDraggable(mainFrame)
+makeDraggable(minBtn)
 
 local function toggleUI()
     if mainFrame.Visible then
-        minBtn.Position = mainFrame.Position + UDim2.new(0, 90, 0, 160)
-        mainFrame.Visible = false minBtn.Visible = true
+        minBtn.Position = mainFrame.Position + UDim2.new(0, 90, 0, 180)
+        mainFrame.Visible, minBtn.Visible = false, true
     else
-        mainFrame.Position = minBtn.Position - UDim2.new(0, 90, 0, 160)
-        minBtn.Visible = false mainFrame.Visible = true
+        mainFrame.Position = minBtn.Position - UDim2.new(0, 90, 0, 180)
+        mainFrame.Visible, minBtn.Visible = true, false
     end
 end
-makeDraggable(mainFrame)
-makeDraggable(minBtn, toggleUI)
+minBtn.MouseButton1Click:Connect(toggleUI)
+
+local function createInteractiveBtn(text, pos, parent)
+    local btn = Instance.new("TextButton", parent)
+    btn.Size, btn.Position = UDim2.new(0.9, 0, 0, 35), pos
+    btn.BackgroundColor3, btn.AutoButtonColor = Config.Theme.Button, false
+    btn.Text, btn.TextColor3, btn.Font, btn.TextSize = text, Color3.new(1,1,1), "GothamBold", 12
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
+    btn.MouseEnter:Connect(function() TweenService:Create(btn, TweenInfo.new(0.2), {BackgroundColor3 = Config.Theme.ButtonHover}):Play() end)
+    btn.MouseLeave:Connect(function() TweenService:Create(btn, TweenInfo.new(0.2), {BackgroundColor3 = btn:GetAttribute("ActiveColor") or Config.Theme.Button}):Play() end)
+    return btn
+end
 
 local menuCon = Instance.new("Frame", mainFrame)
 menuCon.Size, menuCon.Position, menuCon.BackgroundTransparency = UDim2.new(1,0,1,-60), UDim2.new(0,0,0,60), 1
-
 local setCon = Instance.new("ScrollingFrame", mainFrame)
-setCon.Size, setCon.Position = UDim2.new(1,0,1,-60), UDim2.new(0,0,0,60)
-setCon.BackgroundTransparency, setCon.Visible, setCon.ScrollBarThickness = 1, false, 2
-setCon.CanvasSize = UDim2.new(0,0,2.2,0)
+setCon.Size, setCon.Position, setCon.Visible = UDim2.new(1,0,1,-60), UDim2.new(0,0,0,60), false
+setCon.BackgroundTransparency, setCon.ScrollBarThickness = 1, 0
+setCon.CanvasSize = UDim2.new(0,0,2.5,0)
 
--- Header
+local title = Instance.new("TextLabel", mainFrame)
+title.Size, title.Position, title.Text = UDim2.new(1,-70,0,40), UDim2.new(0,15,0,10), "RAW AIM"
+title.Font, title.TextColor3, title.TextSize, title.BackgroundTransparency, title.TextXAlignment = "GothamBlack", Config.Theme.Accent, 16, 1, Enum.TextXAlignment.Left
+
 local hideBtn = Instance.new("TextButton", mainFrame)
-hideBtn.Size, hideBtn.Position, hideBtn.Text = UDim2.new(0,30,0,30), UDim2.new(1,-35,0,5), "_"
-hideBtn.BackgroundColor3, hideBtn.TextColor3 = Color3.fromRGB(25,25,25), Color3.new(1,1,1)
+hideBtn.Size, hideBtn.Position, hideBtn.Text = UDim2.new(0,30,0,30), UDim2.new(1,-40,0,10), "_"
+hideBtn.BackgroundColor3, hideBtn.TextColor3, hideBtn.Font = Config.Theme.Button, Color3.new(1,1,1), "GothamBold"
 Instance.new("UICorner", hideBtn)
 hideBtn.MouseButton1Click:Connect(toggleUI)
 
 local setToggle = Instance.new("ImageButton", mainFrame)
-setToggle.Size, setToggle.Position, setToggle.Image = UDim2.new(0,25,0,25), UDim2.new(1,-65,0,7), SETTINGS_ICON
-setToggle.BackgroundTransparency = 1
+setToggle.Size, setToggle.Position, setToggle.Image, setToggle.BackgroundTransparency = UDim2.new(0,25,0,25), UDim2.new(1,-75,0,12), Config.SettingsIcon, 1
 setToggle.MouseButton1Click:Connect(function() menuCon.Visible = not menuCon.Visible setCon.Visible = not setCon.Visible end)
 
-local function createBtn(text, pos, color, parent)
-    local btn = Instance.new("TextButton", parent)
-    btn.Size, btn.Position, btn.BackgroundColor3 = UDim2.new(0.9, 0, 0, 35), pos, color
-    btn.Text, btn.TextColor3, btn.Font = text, Color3.new(1,1,1), "GothamMedium"
-    Instance.new("UICorner", btn)
-    return btn
+-- Menu Elements
+local statusBtn = createInteractiveBtn("SYSTEM: STANDBY", UDim2.new(0.05,0,0,5), menuCon)
+local headBtn = createInteractiveBtn("Aim Focus: HEAD", UDim2.new(0.05,0,0,45), menuCon)
+local lockBtn = createInteractiveBtn("Raw Lock: OFF [L]", UDim2.new(0.05,0,0,90), menuCon)
+local followBtn = createInteractiveBtn("Follow: OFF [K]", UDim2.new(0.05,0,0,135), menuCon)
+local flyBtn = createInteractiveBtn("Fly Mode: OFF [X]", UDim2.new(0.05,0,0,180), menuCon)
+local speedBtn = createInteractiveBtn("Speed Hack: OFF [B]", UDim2.new(0.05,0,0,225), menuCon)
+local killBtn = createInteractiveBtn("PURGE SYSTEM [DEL]", UDim2.new(0.05,0,0,320), menuCon)
+killBtn:SetAttribute("ActiveColor", Config.Theme.Danger) killBtn.BackgroundColor3 = Config.Theme.Danger
+
+-- Settings Elements
+local function createLabel(text, pos, parent)
+    local lbl = Instance.new("TextLabel", parent)
+    lbl.Size, lbl.Position, lbl.TextColor3, lbl.BackgroundTransparency, lbl.Font = UDim2.new(1,0,0,30), pos, Color3.new(1,1,1), 1, "GothamBold"
+    lbl.Text = text
+    return lbl
 end
 
--- Main Tab
-local status = createBtn("Target: Scanning...", UDim2.new(0.05,0,0,5), Color3.fromRGB(20,20,20), menuCon)
-local headBtn = createBtn("Aim Part: HEAD", UDim2.new(0.05,0,0,45), Color3.fromRGB(80,30,120), menuCon)
-local followBtn = createBtn("Follow: OFF [K]", UDim2.new(0.05,0,0,90), Color3.fromRGB(40,40,40), menuCon)
-local lockBtn = createBtn("Cam Lock: OFF [L]", UDim2.new(0.05,0,0,135), Color3.fromRGB(40,40,40), menuCon)
-local flyBtn = createBtn("Fly Mode: OFF [X]", UDim2.new(0.05,0,0,180), Color3.fromRGB(40,40,40), menuCon)
-local killBtn = createBtn("KILL ALL [DEL]", UDim2.new(0.05,0,0,280), Color3.fromRGB(80,20,20), menuCon)
+local fovLbl = createLabel("FOV RADIUS: " .. States.fovRadius, UDim2.new(0,0,0,5), setCon)
+local fovAdd = createInteractiveBtn("FOV +", UDim2.new(0.05,0,0,40), setCon)
+local fovSub = createInteractiveBtn("FOV -", UDim2.new(0.05,0,0,80), setCon)
 
--- Settings Tab Labels
-local fovLbl = Instance.new("TextLabel", setCon) fovLbl.Size, fovLbl.Position, fovLbl.TextColor3, fovLbl.BackgroundTransparency = UDim2.new(1,0,0,25), UDim2.new(0,0,0,10), Color3.new(1,1,1), 1
-local fovPlus = createBtn("FOV +", UDim2.new(0.05,0,0,40), Color3.fromRGB(45,45,45), setCon)
-local fovMinus = createBtn("FOV -", UDim2.new(0.05,0,0,80), Color3.fromRGB(45,45,45), setCon)
-local rangeLbl = Instance.new("TextLabel", setCon) rangeLbl.Size, rangeLbl.Position, rangeLbl.TextColor3, rangeLbl.BackgroundTransparency = UDim2.new(1,0,0,25), UDim2.new(0,0,0,130), Color3.new(1,1,1), 1
-local rangePlus = createBtn("Range +", UDim2.new(0.05,0,0,160), Color3.fromRGB(45,45,45), setCon)
-local rangeMinus = createBtn("Range -", UDim2.new(0.05,0,0,200), Color3.fromRGB(45,45,45), setCon)
+local rangeLbl = createLabel("ESP RANGE: " .. States.espRange, UDim2.new(0,0,0,125), setCon)
+local rangeAdd = createInteractiveBtn("Range +", UDim2.new(0.05,0,0,160), setCon)
+local rangeSub = createInteractiveBtn("Range -", UDim2.new(0.05,0,0,200), setCon)
+
+local flyLbl = createLabel("FLY SPEED: " .. States.flySpeed, UDim2.new(0,0,0,245), setCon)
+local flyAdd = createInteractiveBtn("Fly Speed +", UDim2.new(0.05,0,0,280), setCon)
+local flySub = createInteractiveBtn("Fly Speed -", UDim2.new(0.05,0,0,320), setCon)
+
+local backBtn = createInteractiveBtn("RETURN TO MENU", UDim2.new(0.05,0,0,380), setCon)
+backBtn.MouseButton1Click:Connect(function() menuCon.Visible = true setCon.Visible = false end)
+
+local function updateUI()
+    statusBtn.Text = targetPlayer and "LOCKED: "..targetPlayer.Name:upper() or "SYSTEM: SCANNING"
+    statusBtn.TextColor3 = targetPlayer and Config.Theme.Accent or Color3.new(1,1,1)
+    
+    fovLbl.Text, rangeLbl.Text, flyLbl.Text = "FOV RADIUS: "..States.fovRadius, "ESP RANGE: "..States.espRange, "FLY SPEED: "..States.flySpeed
+    headBtn.Text = "Aim Focus: "..(States.isHeadshotOnly and "HEAD" or "BODY")
+    
+    local function setBtnState(btn, state, text)
+        btn.Text = text
+        local color = state and Config.Theme.Active or Config.Theme.Button
+        btn:SetAttribute("ActiveColor", color)
+        TweenService:Create(btn, TweenInfo.new(0.3), {BackgroundColor3 = color}):Play()
+    end
+    
+    setBtnState(followBtn, States.isFollowing, "Follow: "..(States.isFollowing and "ON" or "OFF").." [K]")
+    setBtnState(lockBtn, States.isCamLocked, "Raw Lock: "..(States.isCamLocked and "ON" or "OFF").." [L]")
+    setBtnState(flyBtn, States.isFlying, "Fly Mode: "..(States.isFlying and "ON" or "OFF").." [X]")
+    setBtnState(speedBtn, States.isSpeedHack, "Speed Hack: "..(States.isSpeedHack and "ON" or "OFF").." [B]")
+end
 
 -- ==========================================
--- 3. CORE ENGINES
+-- 4. RENDER LOOP & PHYSICS
 -- ==========================================
-local fovCircle = Drawing.new("Circle")
-fovCircle.Visible, fovCircle.Thickness, fovCircle.Color = true, 2, Color3.fromRGB(0,255,200)
+local fovCircle
+pcall(function()
+    fovCircle = Drawing.new("Circle")
+    fovCircle.Visible = true
+    fovCircle.Thickness = 1.5
+    fovCircle.Color = Config.Theme.Accent
+end)
 
-connections.Main = RunService.Heartbeat:Connect(function()
-    fovCircle.Position = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
-    fovCircle.Radius = fovRadius
+table.insert(connections, RunService.Heartbeat:Connect(function()
+    if fovCircle then
+        fovCircle.Position = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+        fovCircle.Radius = States.fovRadius
+    end
+    
     local char = LocalPlayer.Character
-    if not char or not char:FindFirstChild("HumanoidRootPart") then return end
-    local hrp = char.HumanoidRootPart
+    local hrp = getRoot(char)
+    if not hrp then return end
 
-    local closest, dist = nil, math.huge
-    for _, p in pairs(Players:GetPlayers()) do
-        if isEnemy(p) and p.Character and p.Character:FindFirstChild("HumanoidRootPart") then
-            local tHrp = p.Character.HumanoidRootPart
-            local sPos, onScr = Camera:WorldToViewportPoint(tHrp.Position)
-            if onScr and (Vector2.new(sPos.X, sPos.Y) - fovCircle.Position).Magnitude <= fovRadius then
-                local d = (hrp.Position - tHrp.Position).Magnitude
-                if d < dist then dist = d closest = p end
+    if char:FindFirstChildOfClass("Humanoid") then
+        char:FindFirstChildOfClass("Humanoid").WalkSpeed = States.isSpeedHack and States.walkSpeedMod or 16
+    end
+
+    -- TARGETING LOGIC
+    if States.isCamLocked then
+        if not isEnemy(targetPlayer) then
+            States.isCamLocked = false
+            targetPlayer = nil
+            updateUI()
+        end
+    else
+        local closest, minFov = nil, States.fovRadius
+        for _, plr in pairs(Players:GetPlayers()) do
+            if isEnemy(plr) then
+                local tRoot = getRoot(plr.Character)
+                local sPos, onScr = Camera:WorldToViewportPoint(tRoot.Position)
+                if onScr then
+                    local fDist = (Vector2.new(sPos.X, sPos.Y) - (fovCircle and fovCircle.Position or Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2))).Magnitude
+                    if fDist < minFov then
+                        minFov = fDist
+                        closest = plr
+                    end
+                end
             end
         end
+        if targetPlayer ~= closest then
+            targetPlayer = closest
+            updateUI()
+        end
     end
-    targetPlayer = closest
 
-    if isNoclipping then for _, v in pairs(char:GetDescendants()) do if v:IsA("BasePart") then v.CanCollide = false end end end
-    if isFlying then
+    -- Fly Physics
+    if States.isNoclipping then
+        for _, v in pairs(char:GetDescendants()) do if v:IsA("BasePart") then v.CanCollide = false end end
+    end
+    
+    if States.isFlying then
         local move = Vector3.new(0,0,0)
         if UserInputService:IsKeyDown(Enum.KeyCode.W) then move += Camera.CFrame.LookVector end
         if UserInputService:IsKeyDown(Enum.KeyCode.S) then move -= Camera.CFrame.LookVector end
@@ -167,94 +290,145 @@ connections.Main = RunService.Heartbeat:Connect(function()
         if UserInputService:IsKeyDown(Enum.KeyCode.D) then move += Camera.CFrame.RightVector end
         if UserInputService:IsKeyDown(Enum.KeyCode.Space) then move += Vector3.new(0,1,0) end
         if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then move -= Vector3.new(0,1,0) end
-        hrp.Velocity = move * FLY_SPEED
-        hrp.Anchored = (move == Vector3.new(0,0,0))
-    else hrp.Anchored = false end
-
-    if isFollowing and targetPlayer and targetPlayer.Character then
-        char:PivotTo(targetPlayer.Character.HumanoidRootPart.CFrame * CFrame.new(0, 8, 0))
+        
+        local targetVelocity = move * States.flySpeed
+        hrp.AssemblyLinearVelocity = hrp.AssemblyLinearVelocity:Lerp(targetVelocity, 0.5) 
+        hrp.Anchored = (move.Magnitude == 0 and hrp.AssemblyLinearVelocity.Magnitude < 1)
+    else 
+        hrp.Anchored = false 
     end
-end)
 
-connections.Render = RunService.RenderStepped:Connect(function()
-    if isCamLocked and targetPlayer and targetPlayer.Character then
-        local aim = isHeadshotOnly and targetPlayer.Character:FindFirstChild("Head") or targetPlayer.Character:FindFirstChild("HumanoidRootPart")
-        if aim then Camera.CFrame = CFrame.lookAt(Camera.CFrame.Position, aim.Position) end
+    if States.isFollowing and targetPlayer and targetPlayer.Character then
+        char:PivotTo(getRoot(targetPlayer.Character).CFrame * CFrame.new(0, 8, 0))
     end
-    status.Text = "TARGET: " .. (targetPlayer and targetPlayer.Name:upper() or "SCANNING...")
-    fovLbl.Text = "FOV RADIUS: " .. fovRadius
-    rangeLbl.Text = "ESP RANGE: " .. espRange
-    followBtn.BackgroundColor3 = isFollowing and Color3.fromRGB(50,150,50) or Color3.fromRGB(150,40,40)
-    lockBtn.BackgroundColor3 = isCamLocked and Color3.fromRGB(50,200,200) or Color3.fromRGB(40,80,150)
-    flyBtn.BackgroundColor3 = isFlying and Color3.fromRGB(50,150,50) or Color3.fromRGB(150,40,40)
-end)
+end))
+
+-- RAW CAMERA SNAP
+table.insert(connections, RunService.RenderStepped:Connect(function()
+    if States.isCamLocked and targetPlayer and targetPlayer.Character then
+        local aimPart = States.isHeadshotOnly and targetPlayer.Character:FindFirstChild("Head") or getRoot(targetPlayer.Character)
+        if aimPart then
+            Camera.CFrame = CFrame.lookAt(Camera.CFrame.Position, aimPart.Position)
+        end
+    end
+end))
 
 -- ==========================================
--- 4. ESP SYSTEM (WITH HEALTH BAR)
+-- 5. DYNAMIC ESP MANAGER
 -- ==========================================
-local function setupESP(p)
+local function createESP(p)
     p.CharacterAdded:Connect(function(char)
         if p == LocalPlayer then return end
         local head = char:WaitForChild("Head", 5)
         local hum = char:WaitForChild("Humanoid", 5)
         
         local hl = Instance.new("Highlight", char)
+        hl.OutlineTransparency, hl.FillTransparency = 0.2, 0.6
+        
         local bill = Instance.new("BillboardGui", head)
-        bill.AlwaysOnTop, bill.Size, bill.ExtentsOffset = true, UDim2.new(0,120,0,50), Vector3.new(0, 2, 0)
+        bill.AlwaysOnTop, bill.Size, bill.ExtentsOffset = true, UDim2.new(0, 150, 0, 50), Vector3.new(0, 3, 0)
         
         local lbl = Instance.new("TextLabel", bill)
-        lbl.Size, lbl.BackgroundTransparency, lbl.Font, lbl.TextColor3, lbl.TextSize = UDim2.new(1,0,0,30), 1, "GothamBold", Color3.new(1,1,1), 12
+        lbl.Size, lbl.BackgroundTransparency, lbl.TextColor3, lbl.Font, lbl.TextSize = UDim2.new(1,0,0,30), 1, Color3.new(1,1,1), "GothamBold", 13
         
-        -- Health Bar BG
         local barBG = Instance.new("Frame", bill)
-        barBG.Size, barBG.Position = UDim2.new(0.8, 0, 0, 5), UDim2.new(0.1, 0, 0, 32)
-        barBG.BackgroundColor3, barBG.BorderSizePixel = Color3.new(0,0,0), 0
-        
-        -- Health Bar Fill
+        barBG.Size, barBG.Position, barBG.BackgroundColor3, barBG.BorderSizePixel = UDim2.new(0.8, 0, 0, 4), UDim2.new(0.1, 0, 0, 32), Color3.new(0,0,0), 0
         local barFill = Instance.new("Frame", barBG)
         barFill.Size, barFill.BorderSizePixel = UDim2.new(1, 0, 1, 0), 0
         
-        connections["ESP"..p.UserId] = RunService.RenderStepped:Connect(function()
-            if not char or not char.Parent or not isEnemy(p) then 
-                hl.Enabled, bill.Enabled = false, false return 
+        local espConn
+        espConn = RunService.RenderStepped:Connect(function()
+            if not char or not char.Parent or not isEnemy(p) or not States.isEspEnabled then
+                hl.Enabled, bill.Enabled = false, false 
+                if hum and hum.Health <= 0 then espConn:Disconnect() end
+                return 
             end
-            local d = (LocalPlayer.Character.HumanoidRootPart.Position - char.HumanoidRootPart.Position).Magnitude
-            if isEspEnabled and d <= espRange then
+            
+            local myRoot = getRoot(LocalPlayer.Character)
+            local tRoot = getRoot(char)
+            if not myRoot or not tRoot then return end
+            
+            local dist = (myRoot.Position - tRoot.Position).Magnitude
+            if dist <= States.espRange then
                 hl.Enabled, bill.Enabled = true, true
-                local hpPercent = hum.Health / hum.MaxHealth
-                local col = getHealthColor(hpPercent)
+                local hp = hum.Health / hum.MaxHealth
+                local col = getHealthColor(hp)
                 
-                lbl.Text = p.Name .. " [" .. math.floor(d) .. "m]"
+                lbl.Text = string.format("%s\n[%dm]", p.Name, math.floor(dist))
                 lbl.TextColor3 = col
-                barFill.Size = UDim2.new(hpPercent, 0, 1, 0)
-                barFill.BackgroundColor3 = col
+                barFill.Size, barFill.BackgroundColor3 = UDim2.new(hp, 0, 1, 0), col
                 hl.FillColor = col
-            else
-                hl.Enabled, bill.Enabled = false, false
+                hl.OutlineColor = (States.isCamLocked and targetPlayer == p) and Config.Theme.Accent or Color3.new(1,1,1)
+            else 
+                hl.Enabled, bill.Enabled = false, false 
             end
         end)
+        table.insert(connections, espConn)
     end)
 end
 
--- Controls
-local function kill() for _,c in pairs(connections) do c:Disconnect() end screenGui:Destroy() fovCircle:Remove() end
-killBtn.MouseButton1Click:Connect(kill)
-headBtn.MouseButton1Click:Connect(function() isHeadshotOnly = not isHeadshotOnly headBtn.Text = "Aim Part: "..(isHeadshotOnly and "HEAD" or "BODY") end)
-fovPlus.MouseButton1Click:Connect(function() fovRadius += 25 end)
-fovMinus.MouseButton1Click:Connect(function() fovRadius = math.max(25, fovRadius - 25) end)
-rangePlus.MouseButton1Click:Connect(function() espRange += 250 end)
-rangeMinus.MouseButton1Click:Connect(function() espRange = math.max(250, espRange - 250) end)
+-- ==========================================
+-- 6. EVENT LISTENERS & PURGE
+-- ==========================================
+local function killScript()
+    for _, c in pairs(connections) do pcall(function() c:Disconnect() end) end
+    pcall(function() screenGui:Destroy() end)
+    pcall(function() if fovCircle then fovCircle:Remove() end end)
+    if LocalPlayer.Character then 
+        local h = LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
+        if h then h.WalkSpeed = 16 end
+    end
+end
 
 UserInputService.InputBegan:Connect(function(i, g)
-    if g then return end
-    if i.KeyCode == Enum.KeyCode.Delete then kill()
-    elseif i.KeyCode == Enum.KeyCode.K then isFollowing = not isFollowing
-    elseif i.KeyCode == Enum.KeyCode.L then isCamLocked = not isCamLocked
-    elseif i.KeyCode == Enum.KeyCode.X then isFlying = not isFlying
-    elseif i.KeyCode == Enum.KeyCode.N then isNoclipping = not isNoclipping
-    elseif i.KeyCode == Enum.KeyCode.H then isEspEnabled = not isEspEnabled
+    if i.UserInputType == Enum.UserInputType.MouseButton1 and UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then
+        pcall(function() LocalPlayer.Character:PivotTo(CFrame.new(Mouse.Hit.Position + Vector3.new(0,3,0))) end)
     end
+    if g then return end
+    
+    local updated = false
+    if i.KeyCode == Enum.KeyCode.Delete then killScript() return
+    elseif i.KeyCode == Enum.KeyCode.K then States.isFollowing = not States.isFollowing; updated = true
+    elseif i.KeyCode == Enum.KeyCode.L then 
+        if States.isCamLocked then
+            States.isCamLocked = false
+            targetPlayer = nil
+        else
+            if targetPlayer then States.isCamLocked = true end
+        end
+        updated = true
+    elseif i.KeyCode == Enum.KeyCode.X then States.isFlying = not States.isFlying; updated = true
+    elseif i.KeyCode == Enum.KeyCode.B then States.isSpeedHack = not States.isSpeedHack; updated = true
+    elseif i.KeyCode == Enum.KeyCode.N then States.isNoclipping = not States.isNoclipping; updated = true
+    elseif i.KeyCode == Enum.KeyCode.H then States.isEspEnabled = not States.isEspEnabled; updated = true
+    end
+    
+    if updated then updateUI() end
 end)
 
-for _, p in pairs(Players:GetPlayers()) do setupESP(p) end
-Players.PlayerAdded:Connect(setupESP)
+headBtn.MouseButton1Click:Connect(function() States.isHeadshotOnly = not States.isHeadshotOnly updateUI() end)
+followBtn.MouseButton1Click:Connect(function() States.isFollowing = not States.isFollowing updateUI() end)
+lockBtn.MouseButton1Click:Connect(function() 
+    if States.isCamLocked then
+        States.isCamLocked = false
+        targetPlayer = nil
+    else
+        if targetPlayer then States.isCamLocked = true end
+    end
+    updateUI() 
+end)
+flyBtn.MouseButton1Click:Connect(function() States.isFlying = not States.isFlying updateUI() end)
+speedBtn.MouseButton1Click:Connect(function() States.isSpeedHack = not States.isSpeedHack updateUI() end)
+
+fovAdd.MouseButton1Click:Connect(function() States.fovRadius += 25 updateUI() end)
+fovSub.MouseButton1Click:Connect(function() States.fovRadius = math.max(25, States.fovRadius - 25) updateUI() end)
+rangeAdd.MouseButton1Click:Connect(function() States.espRange += 250 updateUI() end)
+rangeSub.MouseButton1Click:Connect(function() States.espRange = math.max(250, States.espRange - 250) updateUI() end)
+flyAdd.MouseButton1Click:Connect(function() States.flySpeed += 10 updateUI() end)
+flySub.MouseButton1Click:Connect(function() States.flySpeed = math.max(10, States.flySpeed - 10) updateUI() end)
+killBtn.MouseButton1Click:Connect(killScript)
+
+for _, p in pairs(Players:GetPlayers()) do createESP(p) end
+Players.PlayerAdded:Connect(createESP)
+
+updateUI()
